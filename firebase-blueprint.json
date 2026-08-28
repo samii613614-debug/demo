@@ -1,0 +1,141 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile information stored in Firestore",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Unique Firebase Authentication UID"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "User's full display name"
+        },
+        "email": {
+          "type": "string",
+          "description": "User's email address"
+        },
+        "phoneNumber": {
+          "type": "string",
+          "description": "User's phone number in E.164 or BD format"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of the last profile update"
+        }
+      },
+      "required": ["uid"]
+    },
+    "UserCart": {
+      "title": "UserCart",
+      "description": "Cart items document for a specific user",
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "description": "List of cart items with quantity and product details"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last updated timestamp"
+        }
+      }
+    },
+    "UserWishlist": {
+      "title": "UserWishlist",
+      "description": "Wishlist items document for a specific user",
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "description": "List of favorited products"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last updated timestamp"
+        }
+      }
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Order placement record for a customer",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique invoice order ID (e.g. WP-123456)"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of customer placing order"
+        },
+        "date": {
+          "type": "string",
+          "description": "Formatted order date string"
+        },
+        "items": {
+          "type": "array",
+          "description": "Cart items placed in this order"
+        },
+        "subtotal": {
+          "type": "number",
+          "description": "Subtotal amount in BDT"
+        },
+        "discount": {
+          "type": "number",
+          "description": "Discount applied in BDT"
+        },
+        "deliveryFee": {
+          "type": "number",
+          "description": "Delivery charge in BDT"
+        },
+        "total": {
+          "type": "number",
+          "description": "Total final charge in BDT"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Pending", "Processing", "Shipped", "Delivered", "Cancelled"],
+          "description": "Current order status"
+        },
+        "shippingAddress": {
+          "type": "object",
+          "description": "Customer shipping details"
+        },
+        "paymentMethod": {
+          "type": "string",
+          "description": "Payment method chosen"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of order placement"
+        }
+      },
+      "required": ["id", "userId", "total", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile collection"
+    },
+    "/users/{userId}/data/cart": {
+      "schema": "UserCart",
+      "description": "User cart storage"
+    },
+    "/users/{userId}/data/wishlist": {
+      "schema": "UserWishlist",
+      "description": "User wishlist storage"
+    },
+    "/orders/{orderId}": {
+      "schema": "Order",
+      "description": "Customer orders collection"
+    }
+  }
+}

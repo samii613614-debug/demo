@@ -1,0 +1,8 @@
+{
+  "name": "demo company",
+  "description": "Official DEMO COMPANY electronics e-commerce store with refrigerator, AC, TV, smartphone, washing machine catalog, instant checkout, and deals.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
