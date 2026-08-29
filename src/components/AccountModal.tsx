@@ -181,17 +181,52 @@ export const AccountModal: React.FC<AccountModalProps> = ({
     }
   }, [user, reloadUser]);
 
+  const handleModalClose = useCallback(async () => {
+    // If the user has an unverified session (e.g. pending email verification or phone OTP),
+    // cancel the pending verification session and sign out so next time it opens fresh to Login
+    if (isUnverifiedEmailUser || emailAuthMode === 'verifyEmail' || (!user?.emailVerified && isEmailUser && user)) {
+      try {
+        await logout();
+      } catch (e) {
+        console.warn('Error signing out unverified session on close:', e);
+      }
+    }
+    clearRecaptcha();
+    setEmailAuthMode('login');
+    setAuthMethod('email');
+    setPhoneStep('input');
+    setPhoneNumber('');
+    setPhoneUserName('');
+    setOtpCode('');
+    setConfirmationResult(null);
+    setEmail('');
+    setPassword('');
+    setFullName('');
+    setEmailVerifyCooldown(0);
+    setResendCooldown(0);
+    resetFormStates();
+    onClose();
+  }, [isUnverifiedEmailUser, emailAuthMode, user, isEmailUser, logout, clearRecaptcha, resetFormStates, onClose]);
+
   // Clear reCAPTCHA and reset transient states when modal closes
   useEffect(() => {
     if (!isOpen) {
+      if (isUnverifiedEmailUser || emailAuthMode === 'verifyEmail' || (!user?.emailVerified && isEmailUser && user)) {
+        logout().catch(() => {});
+      }
       clearRecaptcha();
       resetFormStates();
-      if (!isUnverifiedEmailUser) {
-        setAuthMethod('email');
-        setEmailAuthMode('login');
-      }
+      setAuthMethod('email');
+      setEmailAuthMode('login');
+      setPhoneStep('input');
+      setPhoneNumber('');
+      setPhoneUserName('');
+      setOtpCode('');
+      setConfirmationResult(null);
+      setEmailVerifyCooldown(0);
+      setResendCooldown(0);
     }
-  }, [isOpen, clearRecaptcha, resetFormStates, isUnverifiedEmailUser]);
+  }, [isOpen, clearRecaptcha, resetFormStates, isUnverifiedEmailUser, emailAuthMode, user, isEmailUser, logout]);
 
   // Phone Resend Countdown Timer
   useEffect(() => {
@@ -599,16 +634,23 @@ export const AccountModal: React.FC<AccountModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-fade-in">
+    <div 
+      className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-fade-in"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          handleModalClose();
+        }
+      }}
+    >
       <div className="bg-white w-full max-w-xl rounded-2xl sm:rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
         
         {/* Header */}
         <div className="bg-[#003893] text-white p-3.5 sm:p-5 flex items-center justify-between">
           <div className="flex items-center space-x-2 sm:space-x-3">
             <button
-              onClick={onClose}
+              onClick={handleModalClose}
               aria-label="Back"
-              className="flex lg:hidden p-1.5 rounded-full text-white/90 hover:text-white hover:bg-white/15 transition-colors cursor-pointer"
+              className="flex sm:hidden p-1.5 rounded-full text-white/90 hover:text-white hover:bg-white/15 transition-colors cursor-pointer"
             >
               <ArrowLeft className="w-5 h-5" />
             </button>
@@ -637,8 +679,8 @@ export const AccountModal: React.FC<AccountModalProps> = ({
             </div>
           </div>
           <button 
-            onClick={onClose}
-            className="hidden lg:flex p-1.5 rounded-full text-white/80 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+            onClick={handleModalClose}
+            className="flex p-1.5 rounded-full text-white/80 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
             aria-label="Close"
           >
             <X className="w-5 h-5" />
@@ -793,24 +835,14 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                   )}
                 </button>
 
-                {/* 3. Sign Out / Switch Account */}
+                {/* 3. Cancel Verification & Back to Login */}
                 <button
                   type="button"
                   onClick={handleLogout}
-                  disabled={isSubmitting}
-                  className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-red-600 transition-colors flex items-center justify-center space-x-1 cursor-pointer disabled:opacity-60"
+                  className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-[#003893] transition-colors flex items-center justify-center space-x-1 cursor-pointer"
                 >
-                  {isSubmitting ? (
-                    <>
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      <span>Signing out...</span>
-                    </>
-                  ) : (
-                    <>
-                      <LogOut className="w-3.5 h-3.5" />
-                      <span>Sign Out / Use a Different Account</span>
-                    </>
-                  )}
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                  <span>Cancel Verification & Back to Login</span>
                 </button>
               </div>
             </div>
