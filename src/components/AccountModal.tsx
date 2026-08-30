@@ -33,7 +33,8 @@ import {
   verifyResetCode,
   confirmNewPassword,
   applyEmailVerification,
-  isEmailPasswordUser
+  isEmailPasswordUser,
+  isPhonePasswordEmail,
 } from '../services/authService';
 
 interface AccountModalProps {
@@ -65,6 +66,12 @@ export const AccountModal: React.FC<AccountModalProps> = ({
     isVerified,
     loginWithEmail, 
     registerWithEmail, 
+    loginWithPhonePassword,
+    registerWithPhonePassword,
+    resetPhonePassword,
+    sendEmailSignInLink,
+    completeEmailLinkSignIn,
+    checkIsSignInWithEmailLink,
     loginWithGoogle, 
     sendPhoneOtp,
     verifyPhoneOtp,
@@ -80,8 +87,8 @@ export const AccountModal: React.FC<AccountModalProps> = ({
   // Auth Method: 'phone' or 'email'
   const [authMethod, setAuthMethod] = useState<'phone' | 'email'>('email');
   
-  // Email Auth Form Modes: 'login' | 'signup' | 'verifyEmail' | 'forgot' | 'resetPassword'
-  const [emailAuthMode, setEmailAuthMode] = useState<'login' | 'signup' | 'verifyEmail' | 'forgot' | 'resetPassword'>('login');
+  // Email Auth Form Modes: 'login' | 'signup' | 'verifyEmail' | 'forgot' | 'resetPassword' | 'emailLinkSent' | 'confirmEmailLink'
+  const [emailAuthMode, setEmailAuthMode] = useState<'login' | 'signup' | 'verifyEmail' | 'forgot' | 'resetPassword' | 'emailLinkSent' | 'confirmEmailLink'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
@@ -128,10 +135,40 @@ export const AccountModal: React.FC<AccountModalProps> = ({
   // Determine if current logged-in user is an unverified Email/Password user
   const isUnverifiedEmailUser = Boolean(user && isEmailUser && !user.emailVerified);
 
-  // Check for Firebase Auth Action Codes in URL (mode=resetPassword, mode=verifyEmail)
+  // Check for Firebase Auth Email Sign-In Link or Action Codes in URL (mode=resetPassword, mode=verifyEmail)
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
+      // 1. Detect if the user clicked a Firebase Email Sign-In Link
+      if (checkIsSignInWithEmailLink(window.location.href)) {
+        const storedEmail = window.localStorage.getItem('emailForSignIn') || email;
+        if (storedEmail && storedEmail.trim()) {
+          setIsSubmitting(true);
+          resetFormStates();
+          completeEmailLinkSignIn(storedEmail.trim(), window.location.href)
+            .then(() => {
+              setSuccessMessage('Signed in successfully via email link!');
+              setActiveTab('profile');
+              setEmailAuthMode('login');
+              try {
+                window.history.replaceState({}, document.title, window.location.pathname);
+              } catch {}
+            })
+            .catch((err) => {
+              setFormError(err.message || 'The sign-in link is invalid or has expired. Please request a new link.');
+              setEmailAuthMode('login');
+            })
+            .finally(() => {
+              setIsSubmitting(false);
+            });
+        } else {
+          // If the email is not in localStorage, ask the user to enter their email address to complete sign-in
+          setEmailAuthMode('confirmEmailLink');
+        }
+        return;
+      }
+
+      // 2. Detect Action Codes (resetPassword, verifyEmail)
       const urlParams = new URLSearchParams(window.location.search);
       const mode = urlParams.get('mode');
       const oobCode = urlParams.get('oobCode');
@@ -177,9 +214,9 @@ export const AccountModal: React.FC<AccountModalProps> = ({
         }
       }
     } catch (e) {
-      console.warn('Action code detection error:', e);
+      console.warn('Action code / Email link detection error:', e);
     }
-  }, [user, reloadUser]);
+  }, [isOpen, checkIsSignInWithEmailLink, completeEmailLinkSignIn, user, reloadUser, resetFormStates, email]);
 
   const handleModalClose = useCallback(async () => {
     // If the user has an unverified session (e.g. pending email verification or phone OTP),
@@ -253,11 +290,128 @@ export const AccountModal: React.FC<AccountModalProps> = ({
   }, [emailVerifyCooldown]);
 
   // --- Phone Auth Handlers ---
+  const handlePhoneLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanPhone = phoneNumber.trim();
+    if (!cleanPhone) {
+      setFormError('Please enter your mobile phone number.');
+      return;
+    }
+
+    if (!isValidBangladeshPhoneNumber(cleanPhone)) {
+      setFormError('Please enter a valid 11-digit Bangladesh mobile number (e.g. 01712345678).');
+      return;
+    }
+
+    if (!password) {
+      setFormError('Please enter your password.');
+      return;
+    }
+
+    resetFormStates();
+    setIsSubmitting(true);
+
+    try {
+      await loginWithPhonePassword(cleanPhone, password);
+      setSuccessMessage('Signed in successfully!');
+      setActiveTab('profile');
+      setEmailAuthMode('login');
+    } catch (err: any) {
+      setFormError(err.message || 'Phone login failed. Please verify your phone number and password.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handlePhoneSignUpSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    resetFormStates();
+
+    const cleanName = (phoneUserName || fullName).trim();
+    const cleanPhone = phoneNumber.trim();
+
+    if (!cleanName) {
+      setFormError('Please enter your full name.');
+      return;
+    }
+
+    if (!cleanPhone) {
+      setFormError('Please enter your mobile phone number.');
+      return;
+    }
+
+    if (!isValidBangladeshPhoneNumber(cleanPhone)) {
+      setFormError('Please enter a valid 11-digit Bangladesh mobile number (e.g. 01712345678).');
+      return;
+    }
+
+    if (!password || password.length < 6) {
+      setFormError('Please provide a password with at least 6 characters.');
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      const confirmation = await sendPhoneOtp(cleanPhone, 'recaptcha-container');
+      setConfirmationResult(confirmation);
+      setPhoneStep('otp');
+      setResendCooldown(60);
+      setSuccessMessage(`6-digit OTP code sent via SMS to ${formatBangladeshPhoneNumber(cleanPhone)}`);
+    } catch (err: any) {
+      clearRecaptcha();
+      setFormError(err.message || 'Failed to send SMS verification code. Please check your number.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handlePhoneSignUpOtpVerify = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!confirmationResult) {
+      setFormError('Verification session expired. Please request a new code.');
+      setPhoneStep('input');
+      clearRecaptcha();
+      return;
+    }
+
+    if (!otpCode || otpCode.trim().length < 6) {
+      setFormError('Please enter the full 6-digit OTP code received on your phone.');
+      return;
+    }
+
+    resetFormStates();
+    setIsSubmitting(true);
+
+    try {
+      const cleanName = (phoneUserName || fullName).trim() || 'Customer';
+      await registerWithPhonePassword(
+        phoneNumber.trim(),
+        password,
+        cleanName,
+        confirmationResult,
+        otpCode.trim()
+      );
+      setSuccessMessage('Account created and phone verified successfully! Welcome to WALTON Plaza.');
+      setActiveTab('profile');
+      setEmailAuthMode('login');
+      setPhoneStep('input');
+      setOtpCode('');
+      setPassword('');
+      setConfirmationResult(null);
+      clearRecaptcha();
+    } catch (err: any) {
+      setFormError(err.message || 'Invalid or expired OTP code. Please check and try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const handleSendOtp = async (e: React.FormEvent) => {
     e.preventDefault();
     resetFormStates();
 
-    const cleanName = phoneUserName.trim();
+    const cleanName = (phoneUserName || fullName).trim();
     if (!cleanName) {
       setFormError('Please enter your full name before proceeding.');
       return;
@@ -308,12 +462,12 @@ export const AccountModal: React.FC<AccountModalProps> = ({
     setIsSubmitting(true);
 
     try {
-      const verifiedUser = await verifyPhoneOtp(confirmationResult, otpCode.trim(), phoneUserName.trim());
+      const cleanName = (phoneUserName || fullName).trim() || 'User';
+      const verifiedUser = await verifyPhoneOtp(confirmationResult, otpCode.trim(), cleanName);
       if (verifiedUser?.uid) {
         try {
-          const rawName = phoneUserName.trim() || 'User';
-          localStorage.setItem(`user_name_${verifiedUser.uid}`, rawName);
-          const clean = rawName.toLowerCase().replace(/\s+/g, '').replace(/[^a-z0-9]/g, '') || 'user';
+          localStorage.setItem(`user_name_${verifiedUser.uid}`, cleanName);
+          const clean = cleanName.toLowerCase().replace(/\s+/g, '').replace(/[^a-z0-9]/g, '') || 'user';
           const randomNum = Math.floor(100 + Math.random() * 900);
           localStorage.setItem(`user_custom_username_${verifiedUser.uid}`, `${clean}${randomNum}`);
         } catch {}
@@ -385,8 +539,13 @@ export const AccountModal: React.FC<AccountModalProps> = ({
     const cleanName = fullName.trim();
     const cleanEmail = email.trim();
 
-    if (!cleanName || !cleanEmail || !password) {
-      setFormError('Please fill in your full name, email address, and password.');
+    if (!cleanName) {
+      setFormError('Please enter your full name.');
+      return;
+    }
+
+    if (!cleanEmail) {
+      setFormError('Please enter your email address.');
       return;
     }
 
@@ -397,34 +556,99 @@ export const AccountModal: React.FC<AccountModalProps> = ({
       return;
     }
 
-    if (password.length < 6) {
-      setFormError('Password must be at least 6 characters long.');
+    if (!password || password.length < 6) {
+      setFormError('Please provide a password with at least 6 characters.');
       return;
     }
 
     setIsSubmitting(true);
 
     try {
-      const registeredUser = await registerWithEmail(cleanEmail, password, cleanName);
-      if (registeredUser?.uid) {
-        try {
-          const rawName = cleanName || 'User';
-          localStorage.setItem(`user_name_${registeredUser.uid}`, rawName);
-          const clean = rawName.toLowerCase().replace(/\s+/g, '').replace(/[^a-z0-9]/g, '') || 'user';
-          let hash = 5381;
-          for (let i = 0; i < registeredUser.uid.length; i++) {
-            hash = ((hash << 5) + hash) + registeredUser.uid.charCodeAt(i);
-          }
-          const uniqueNum = 1000 + (Math.abs(hash) % 9000);
-          localStorage.setItem(`user_custom_username_${registeredUser.uid}`, `${clean}${uniqueNum}`);
-        } catch {}
-      }
-
-      setEmailVerifyCooldown(0);
+      await registerWithEmail(cleanEmail, password, cleanName);
+      setEmailVerifyCooldown(60);
       setEmailAuthMode('verifyEmail');
-      setSuccessMessage(`Account created! A verification link has been sent to ${cleanEmail}. Please check your Inbox, Spam/Junk, and Promotions folders.`);
+      setSuccessMessage(`Account created successfully! We've sent a verification link to ${cleanEmail}. Please verify your email before logging in.`);
     } catch (err: any) {
-      setFormError(err.message || 'Failed to create account.');
+      setFormError(err.message || 'Registration failed. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleResendEmailSignInLink = async () => {
+    if (emailVerifyCooldown > 0 || isResendingEmail) return;
+    const targetEmail = (email || (typeof window !== 'undefined' ? window.localStorage.getItem('emailForSignIn') : '') || '').trim();
+    if (!targetEmail) {
+      setFormError('Please enter your email address.');
+      return;
+    }
+    resetFormStates();
+    setIsResendingEmail(true);
+
+    try {
+      await sendEmailSignInLink(targetEmail, fullName.trim());
+      setEmailVerifyCooldown(60);
+      setSuccessMessage('A sign-in link has been sent to your email. Please check your inbox and click the link to continue.');
+    } catch (err: any) {
+      setFormError(err.message || 'Failed to resend sign-in link. Please try again in a few moments.');
+    } finally {
+      setIsResendingEmail(false);
+    }
+  };
+
+  const handleConfirmEmailLinkSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanEmail = email.trim();
+    if (!cleanEmail) {
+      setFormError('Please enter the email address where you received the sign-in link.');
+      return;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(cleanEmail)) {
+      setFormError('Please enter a valid email address.');
+      return;
+    }
+
+    resetFormStates();
+    setIsSubmitting(true);
+
+    try {
+      await completeEmailLinkSignIn(cleanEmail, window.location.href);
+      setSuccessMessage('Signed in successfully via email link!');
+      setActiveTab('profile');
+      setEmailAuthMode('login');
+      try {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } catch {}
+    } catch (err: any) {
+      setFormError(err.message || 'Invalid or expired sign-in link. Please request a new link.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSendLoginEmailLink = async () => {
+    const cleanEmail = email.trim();
+    if (!cleanEmail) {
+      setFormError('Please enter your email address above to receive a passwordless sign-in link.');
+      return;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(cleanEmail)) {
+      setFormError('Please enter a valid email address.');
+      return;
+    }
+
+    resetFormStates();
+    setIsSubmitting(true);
+
+    try {
+      await sendEmailSignInLink(cleanEmail);
+      setEmailVerifyCooldown(60);
+      setEmailAuthMode('emailLinkSent');
+      setSuccessMessage('A sign-in link has been sent to your email. Please check your inbox and click the link to continue.');
+    } catch (err: any) {
+      setFormError(err.message || 'Failed to send sign-in link.');
     } finally {
       setIsSubmitting(false);
     }
@@ -460,7 +684,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
 
     try {
       await sendVerificationEmail();
-      setEmailVerifyCooldown(30);
+      setEmailVerifyCooldown(60);
       const recipient = user?.email || email || 'your email address';
       setSuccessMessage(`A fresh verification link has been sent to ${recipient}. Please check your Inbox, Spam/Junk, and Promotions folders.`);
     } catch (err: any) {
@@ -852,7 +1076,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
             /* ========================================================================= */
             <div className="space-y-4 max-w-md mx-auto py-1">
 
-              {/* Method Switcher Tabs: Email vs Phone OTP */}
+              {/* Method Switcher Tabs: Email vs Phone */}
               {emailAuthMode !== 'resetPassword' && (
                 <div className="grid grid-cols-2 p-1 bg-slate-100 rounded-xl border border-slate-200">
                   <button
@@ -886,7 +1110,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                     }`}
                   >
                     <Smartphone className="w-3.5 h-3.5" />
-                    <span>Phone Number (OTP)</span>
+                    <span>Phone & Password</span>
                   </button>
                 </div>
               )}
@@ -943,142 +1167,315 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                 </div>
               )}
 
-              {/* METHOD 1: PHONE NUMBER (OTP) AUTH */}
+              {/* METHOD 1: PHONE & PASSWORD AUTH */}
               {authMethod === 'phone' && (
                 <div className="space-y-4 animate-fade-in">
-                  {phoneStep === 'input' ? (
-                    <form onSubmit={handleSendOtp} className="space-y-3.5">
+                  
+                  {/* 1.1 PHONE LOGIN FORM */}
+                  {emailAuthMode === 'login' && (
+                    <div className="space-y-3.5">
                       <div className="text-center space-y-1">
-                        <h4 className="font-extrabold text-slate-900 text-base sm:text-lg">Sign In with Mobile OTP</h4>
-                        <p className="text-xs text-slate-500">We'll send a 6-digit verification code to your phone</p>
+                        <h4 className="font-extrabold text-slate-900 text-base sm:text-lg">Sign In with Phone Number</h4>
+                        <p className="text-xs text-slate-500">Enter your mobile number and password to sign in</p>
                       </div>
 
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">Full Name (Required) *</label>
-                        <div className="relative">
-                          <UserIcon className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                          <input
-                            type="text"
-                            required
-                            value={phoneUserName}
-                            onChange={(e) => setPhoneUserName(e.target.value)}
-                            placeholder="e.g. AR Sami"
-                            className="w-full text-xs pl-10 pr-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:border-[#003893] focus:bg-white transition-colors text-slate-800"
-                          />
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">Bangladesh Mobile Number *</label>
-                        <div className="relative flex items-center">
-                          <span className="absolute left-3 text-xs font-bold text-slate-500 select-none">+880</span>
-                          <input
-                            type="tel"
-                            required
-                            value={phoneNumber}
-                            onChange={(e) => setPhoneNumber(e.target.value)}
-                            placeholder="01712345678"
-                            className="w-full text-xs pl-14 pr-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:border-[#003893] focus:bg-white transition-colors text-slate-800"
-                          />
-                        </div>
-                      </div>
-
-                      <button
-                        type="submit"
-                        disabled={isSubmitting}
-                        className="w-full bg-[#003893] hover:bg-[#002663] text-white font-bold text-xs py-3 rounded-xl shadow-xs cursor-pointer flex items-center justify-center space-x-2 transition-all disabled:opacity-60"
-                      >
-                        {isSubmitting ? (
-                          <>
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                            <span>Sending SMS Code...</span>
-                          </>
-                        ) : (
-                          <span>Send 6-Digit SMS Code</span>
-                        )}
-                      </button>
-                    </form>
-                  ) : (
-                    /* Phone OTP Verification Form */
-                    <form onSubmit={handleVerifyOtp} className="space-y-3.5">
-                      <div className="flex items-center space-x-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setPhoneStep('input');
-                            setOtpCode('');
-                            clearRecaptcha();
-                            resetFormStates();
-                          }}
-                          className="p-1 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 cursor-pointer"
-                          aria-label="Change Number"
-                        >
-                          <ArrowLeft className="w-4 h-4" />
-                        </button>
+                      <form onSubmit={handlePhoneLoginSubmit} className="space-y-3.5">
                         <div>
-                          <h4 className="font-extrabold text-slate-900 text-base leading-tight">Enter Verification Code</h4>
-                          <p className="text-xs text-slate-500">
-                            Sent to <span className="font-bold text-slate-800">{formatBangladeshPhoneNumber(phoneNumber)}</span>
-                          </p>
+                          <label className="block text-xs font-bold text-slate-700 mb-1">Bangladesh Mobile Number *</label>
+                          <div className="relative flex items-center">
+                            <span className="absolute left-3 text-xs font-bold text-slate-500 select-none">+880</span>
+                            <input
+                              type="tel"
+                              required
+                              value={phoneNumber}
+                              onChange={(e) => setPhoneNumber(e.target.value)}
+                              placeholder="01712345678"
+                              className="w-full text-xs pl-14 pr-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:border-[#003893] focus:bg-white transition-colors text-slate-800"
+                            />
+                          </div>
                         </div>
-                      </div>
 
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">6-Digit Code (SMS)</label>
-                        <input
-                          type="text"
-                          required
-                          autoFocus
-                          maxLength={6}
-                          value={otpCode}
-                          onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
-                          placeholder="------"
-                          className="w-full text-center tracking-[0.4em] font-mono text-base font-bold px-4 py-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:border-[#003893] focus:bg-white transition-colors text-slate-900"
-                        />
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="text-xs font-bold text-slate-700">Password *</label>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEmailAuthMode('forgot');
+                                resetFormStates();
+                              }}
+                              className="text-[11px] font-bold text-[#003893] hover:underline cursor-pointer"
+                            >
+                              Forgot Password?
+                            </button>
+                          </div>
+                          <div className="relative">
+                            <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                            <input
+                              type={showPassword ? 'text' : 'password'}
+                              required
+                              value={password}
+                              onChange={(e) => setPassword(e.target.value)}
+                              placeholder="Enter your password"
+                              className="w-full text-xs pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:border-[#003893] focus:bg-white transition-colors text-slate-800"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowPassword(!showPassword)}
+                              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1"
+                            >
+                              {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                            </button>
+                          </div>
+                        </div>
+
+                        <button
+                          type="submit"
+                          disabled={isSubmitting}
+                          className="w-full bg-[#003893] hover:bg-[#002663] text-white font-bold text-xs py-3 rounded-xl shadow-xs cursor-pointer flex items-center justify-center space-x-2 transition-all disabled:opacity-60"
+                        >
+                          {isSubmitting ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              <span>Signing in...</span>
+                            </>
+                          ) : (
+                            <span>Sign In</span>
+                          )}
+                        </button>
+                      </form>
+
+                      <div className="relative flex py-1 items-center">
+                        <div className="flex-grow border-t border-slate-200"></div>
+                        <span className="flex-shrink mx-3 text-slate-400 text-[11px] font-medium uppercase">Or continue with</span>
+                        <div className="flex-grow border-t border-slate-200"></div>
                       </div>
 
                       <button
-                        type="submit"
-                        disabled={isSubmitting || otpCode.length < 6}
-                        className="w-full bg-[#E31E24] hover:bg-[#c71016] text-white font-bold text-xs py-3 rounded-xl shadow-xs cursor-pointer flex items-center justify-center space-x-2 transition-all disabled:opacity-60"
+                        type="button"
+                        onClick={handleGoogleSignIn}
+                        disabled={isSubmitting}
+                        className="w-full border border-slate-300 hover:bg-slate-50 text-slate-700 font-semibold text-xs py-2.5 rounded-xl flex items-center justify-center space-x-2 cursor-pointer transition-colors disabled:opacity-60"
                       >
-                        {isSubmitting ? (
-                          <>
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                            <span>Verifying Code...</span>
-                          </>
-                        ) : (
-                          <span>Verify & Sign In</span>
-                        )}
+                        <svg className="w-4 h-4" viewBox="0 0 24 24">
+                          <path
+                            fill="#4285F4"
+                            d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                          />
+                          <path
+                            fill="#34A853"
+                            d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                          />
+                          <path
+                            fill="#FBBC05"
+                            d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                          />
+                          <path
+                            fill="#EA4335"
+                            d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                          />
+                        </svg>
+                        <span>Sign in with Google</span>
                       </button>
 
-                      <div className="flex items-center justify-between pt-1 text-xs">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setPhoneStep('input');
-                            setOtpCode('');
-                            clearRecaptcha();
-                            resetFormStates();
-                          }}
-                          className="text-slate-500 hover:text-slate-800 font-medium cursor-pointer"
-                        >
-                          Change Number
-                        </button>
-
-                        <button
-                          type="button"
-                          disabled={resendCooldown > 0 || isSubmitting}
-                          onClick={handleResendOtp}
-                          className={`font-bold flex items-center space-x-1 cursor-pointer transition-colors ${
-                            resendCooldown > 0 ? 'text-slate-400 cursor-not-allowed' : 'text-[#003893] hover:underline'
-                          }`}
-                        >
-                          <RotateCcw className="w-3.5 h-3.5" />
-                          <span>{resendCooldown > 0 ? `Resend in ${resendCooldown}s` : 'Resend OTP'}</span>
-                        </button>
+                      <div className="text-center pt-2">
+                        <p className="text-xs text-slate-600">
+                          Don't have an account?{' '}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEmailAuthMode('signup');
+                              setPhoneStep('input');
+                              resetFormStates();
+                            }}
+                            className="text-[#003893] font-bold hover:underline cursor-pointer"
+                          >
+                            Create an Account
+                          </button>
+                        </p>
                       </div>
-                    </form>
+                    </div>
+                  )}
+
+                  {/* 1.2 PHONE SIGN UP FORM (Step 1: Input details -> Step 2: OTP verification) */}
+                  {emailAuthMode === 'signup' && (
+                    <div>
+                      {phoneStep === 'input' ? (
+                        <div className="space-y-3.5">
+                          <div className="text-center space-y-1">
+                            <h4 className="font-extrabold text-slate-900 text-base sm:text-lg">Create Account with Phone</h4>
+                            <p className="text-xs text-slate-500">Enter your details and verify via SMS OTP</p>
+                          </div>
+
+                          <form onSubmit={handlePhoneSignUpSubmit} className="space-y-3.5">
+                            <div>
+                              <label className="block text-xs font-bold text-slate-700 mb-1">Full Name (Required) *</label>
+                              <div className="relative">
+                                <UserIcon className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                                <input
+                                  type="text"
+                                  required
+                                  value={fullName}
+                                  onChange={(e) => setFullName(e.target.value)}
+                                  placeholder="e.g. AR Sami"
+                                  className="w-full text-xs pl-10 pr-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:border-[#003893] focus:bg-white transition-colors text-slate-800"
+                                />
+                              </div>
+                            </div>
+
+                            <div>
+                              <label className="block text-xs font-bold text-slate-700 mb-1">Bangladesh Mobile Number *</label>
+                              <div className="relative flex items-center">
+                                <span className="absolute left-3 text-xs font-bold text-slate-500 select-none">+880</span>
+                                <input
+                                  type="tel"
+                                  required
+                                  value={phoneNumber}
+                                  onChange={(e) => setPhoneNumber(e.target.value)}
+                                  placeholder="01712345678"
+                                  className="w-full text-xs pl-14 pr-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:border-[#003893] focus:bg-white transition-colors text-slate-800"
+                                />
+                              </div>
+                            </div>
+
+                            <div>
+                              <label className="block text-xs font-bold text-slate-700 mb-1">Password (Min 6 chars) *</label>
+                              <div className="relative">
+                                <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                                <input
+                                  type={showPassword ? 'text' : 'password'}
+                                  required
+                                  minLength={6}
+                                  value={password}
+                                  onChange={(e) => setPassword(e.target.value)}
+                                  placeholder="Create a strong password"
+                                  className="w-full text-xs pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:border-[#003893] focus:bg-white transition-colors text-slate-800"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => setShowPassword(!showPassword)}
+                                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1"
+                                >
+                                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                </button>
+                              </div>
+                            </div>
+
+                            <button
+                              type="submit"
+                              disabled={isSubmitting}
+                              className="w-full bg-[#003893] hover:bg-[#002663] text-white font-bold text-xs py-3 rounded-xl shadow-xs cursor-pointer flex items-center justify-center space-x-2 transition-all disabled:opacity-60"
+                            >
+                              {isSubmitting ? (
+                                <>
+                                  <Loader2 className="w-4 h-4 animate-spin" />
+                                  <span>Sending Verification Code...</span>
+                                </>
+                              ) : (
+                                <span>Create Account & Verify Phone</span>
+                              )}
+                            </button>
+                          </form>
+
+                          <div className="text-center pt-2">
+                            <p className="text-xs text-slate-600">
+                              Already have an account?{' '}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEmailAuthMode('login');
+                                  resetFormStates();
+                                }}
+                                className="text-[#003893] font-bold hover:underline cursor-pointer"
+                              >
+                                Sign In
+                              </button>
+                            </p>
+                          </div>
+                        </div>
+                      ) : (
+                        /* Phone OTP Verification Form */
+                        <form onSubmit={handlePhoneSignUpOtpVerify} className="space-y-3.5">
+                          <div className="flex items-center space-x-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPhoneStep('input');
+                                setOtpCode('');
+                                clearRecaptcha();
+                                resetFormStates();
+                              }}
+                              className="p-1 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 cursor-pointer"
+                              aria-label="Change Number"
+                            >
+                              <ArrowLeft className="w-4 h-4" />
+                            </button>
+                            <div>
+                              <h4 className="font-extrabold text-slate-900 text-base leading-tight">Verify Mobile Number</h4>
+                              <p className="text-xs text-slate-500">
+                                Enter 6-digit code sent to <span className="font-bold text-slate-800">{formatBangladeshPhoneNumber(phoneNumber)}</span>
+                              </p>
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="block text-xs font-bold text-slate-700 mb-1">6-Digit Code (SMS)</label>
+                            <input
+                              type="text"
+                              required
+                              autoFocus
+                              maxLength={6}
+                              value={otpCode}
+                              onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
+                              placeholder="------"
+                              className="w-full text-center tracking-[0.4em] font-mono text-base font-bold px-4 py-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:border-[#003893] focus:bg-white transition-colors text-slate-900"
+                            />
+                          </div>
+
+                          <button
+                            type="submit"
+                            disabled={isSubmitting || otpCode.length < 6}
+                            className="w-full bg-[#E31E24] hover:bg-[#c71016] text-white font-bold text-xs py-3 rounded-xl shadow-xs cursor-pointer flex items-center justify-center space-x-2 transition-all disabled:opacity-60"
+                          >
+                            {isSubmitting ? (
+                              <>
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                                <span>Verifying & Setting up Account...</span>
+                              </>
+                            ) : (
+                              <span>Verify & Complete Registration</span>
+                            )}
+                          </button>
+
+                          <div className="flex items-center justify-between pt-1 text-xs">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPhoneStep('input');
+                                setOtpCode('');
+                                clearRecaptcha();
+                                resetFormStates();
+                              }}
+                              className="text-slate-500 hover:text-slate-800 font-medium cursor-pointer"
+                            >
+                              Change Number
+                            </button>
+
+                            <button
+                              type="button"
+                              disabled={resendCooldown > 0 || isSubmitting}
+                              onClick={handleResendOtp}
+                              className={`font-bold flex items-center space-x-1 cursor-pointer transition-colors ${
+                                resendCooldown > 0 ? 'text-slate-400 cursor-not-allowed' : 'text-[#003893] hover:underline'
+                              }`}
+                            >
+                              <RotateCcw className="w-3.5 h-3.5" />
+                              <span>{resendCooldown > 0 ? `Resend in ${resendCooldown}s` : 'Resend OTP'}</span>
+                            </button>
+                          </div>
+                        </form>
+                      )}
+                    </div>
                   )}
                 </div>
               )}
@@ -1214,10 +1611,10 @@ export const AccountModal: React.FC<AccountModalProps> = ({
 
                   {/* 2. SIGN UP FORM */}
                   {emailAuthMode === 'signup' && (
-                    <div className="space-y-3.5">
+                    <div className="space-y-3.5 animate-fade-in">
                       <div className="text-center space-y-1">
                         <h4 className="font-extrabold text-slate-900 text-base sm:text-lg">Create an Account</h4>
-                        <p className="text-xs text-slate-500">Sign up with email to manage orders & fast checkout</p>
+                        <p className="text-xs text-slate-500">Sign up with your details and verify your email</p>
                       </div>
 
                       <form onSubmit={handleSignUpSubmit} className="space-y-3.5">
@@ -1252,7 +1649,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                         </div>
 
                         <div>
-                          <label className="block text-xs font-bold text-slate-700 mb-1">Password (Required) *</label>
+                          <label className="block text-xs font-bold text-slate-700 mb-1">Password (Required, min 6 characters) *</label>
                           <div className="relative">
                             <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                             <input
@@ -1261,7 +1658,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                               minLength={6}
                               value={password}
                               onChange={(e) => setPassword(e.target.value)}
-                              placeholder="At least 6 characters"
+                              placeholder="Create a secure password"
                               className="w-full text-xs pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:border-[#003893] focus:bg-white transition-colors text-slate-800"
                             />
                             <button
@@ -1282,7 +1679,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                           {isSubmitting ? (
                             <>
                               <Loader2 className="w-4 h-4 animate-spin" />
-                              <span>Creating Account & Sending Link...</span>
+                              <span>Creating Account...</span>
                             </>
                           ) : (
                             <span>Create Account</span>
@@ -1304,6 +1701,143 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                             Sign In
                           </button>
                         </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 2.1 EMAIL LINK SENT NOTIFICATION VIEW */}
+                  {emailAuthMode === 'emailLinkSent' && (
+                    <div className="space-y-4 max-w-md mx-auto py-2 animate-fade-in">
+                      <div className="text-center space-y-2">
+                        <div className="w-14 h-14 rounded-full bg-blue-50 border border-blue-200 text-[#003893] mx-auto flex items-center justify-center shadow-xs">
+                          <Mail className="w-7 h-7" />
+                        </div>
+                        <h4 className="font-extrabold text-slate-900 text-lg sm:text-xl">Check Your Email</h4>
+                        <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                          A sign-in link has been sent to your email. Please check your inbox and click the link to continue.
+                        </p>
+                      </div>
+
+                      {/* Email Address Banner */}
+                      <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-center">
+                        <span className="text-[11px] text-slate-500 uppercase tracking-wider block font-semibold">Sign-in link sent to:</span>
+                        <span className="text-sm font-bold text-[#003893] font-mono break-all">
+                          {email || (typeof window !== 'undefined' ? window.localStorage.getItem('emailForSignIn') : '')}
+                        </span>
+                      </div>
+
+                      {/* Instructions Box */}
+                      <div className="bg-amber-50/70 border border-amber-200/80 rounded-xl p-3.5 space-y-2 text-xs text-amber-900">
+                        <div className="flex items-start space-x-2">
+                          <HelpCircle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                          <div className="space-y-1">
+                            <p className="font-bold">Can't find the email?</p>
+                            <p className="text-[11px] text-amber-800 leading-relaxed">
+                              Please check your <strong>Inbox</strong>, <strong>Spam / Junk</strong>, <strong>Promotions</strong>, and <strong>Updates</strong> folders. The email contains a secure, one-click sign-in link.
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Action Buttons */}
+                      <div className="space-y-2.5 pt-2">
+                        <button
+                          type="button"
+                          onClick={handleResendEmailSignInLink}
+                          disabled={emailVerifyCooldown > 0 || isResendingEmail || isSubmitting}
+                          className={`w-full py-2.5 rounded-xl border text-xs font-bold transition-all flex items-center justify-center space-x-2 ${
+                            emailVerifyCooldown > 0 
+                              ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed' 
+                              : 'border-slate-300 bg-white hover:bg-slate-50 text-slate-700 cursor-pointer'
+                          }`}
+                        >
+                          {isResendingEmail ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <span>Sending Link...</span>
+                            </>
+                          ) : (
+                            <>
+                              <RotateCcw className="w-3.5 h-3.5 text-[#003893]" />
+                              <span>
+                                {emailVerifyCooldown > 0 
+                                  ? `Resend Link in ${emailVerifyCooldown}s` 
+                                  : 'Resend Sign-In Link'}
+                              </span>
+                            </>
+                          )}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEmailAuthMode('login');
+                            resetFormStates();
+                          }}
+                          className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-[#003893] transition-colors flex items-center justify-center space-x-1 cursor-pointer"
+                        >
+                          <ArrowLeft className="w-3.5 h-3.5" />
+                          <span>Back to Sign In</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 2.2 CONFIRM EMAIL LINK SCREEN (When opening link on another device or storage is cleared) */}
+                  {emailAuthMode === 'confirmEmailLink' && (
+                    <div className="space-y-3.5 animate-fade-in">
+                      <div className="text-center space-y-1">
+                        <div className="w-12 h-12 rounded-full bg-blue-50 border border-blue-200 text-[#003893] mx-auto flex items-center justify-center">
+                          <Mail className="w-6 h-6" />
+                        </div>
+                        <h4 className="font-extrabold text-slate-900 text-base sm:text-lg">Confirm Your Email</h4>
+                        <p className="text-xs text-slate-500">Please provide your email address to complete sign-in from your email link</p>
+                      </div>
+
+                      <form onSubmit={handleConfirmEmailLinkSubmit} className="space-y-3.5">
+                        <div>
+                          <label className="block text-xs font-bold text-slate-700 mb-1">Email Address (Required) *</label>
+                          <div className="relative">
+                            <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                            <input
+                              type="email"
+                              required
+                              autoFocus
+                              value={email}
+                              onChange={(e) => setEmail(e.target.value)}
+                              placeholder="name@gmail.com"
+                              className="w-full text-xs pl-10 pr-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:border-[#003893] focus:bg-white transition-colors text-slate-800"
+                            />
+                          </div>
+                        </div>
+
+                        <button
+                          type="submit"
+                          disabled={isSubmitting}
+                          className="w-full bg-[#003893] hover:bg-[#002663] text-white font-bold text-xs py-3 rounded-xl shadow-xs cursor-pointer flex items-center justify-center space-x-2 transition-all disabled:opacity-60"
+                        >
+                          {isSubmitting ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              <span>Completing Sign-In...</span>
+                            </>
+                          ) : (
+                            <span>Complete Sign In</span>
+                          )}
+                        </button>
+                      </form>
+
+                      <div className="text-center pt-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEmailAuthMode('login');
+                            resetFormStates();
+                          }}
+                          className="text-xs font-bold text-[#003893] hover:underline cursor-pointer"
+                        >
+                          Back to Sign In
+                        </button>
                       </div>
                     </div>
                   )}
@@ -1489,7 +2023,11 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                       </div>
                       <div>
                         <h5 className="font-extrabold text-sm text-slate-900">{displayName}</h5>
-                        <p className="text-slate-500">{user.email || user.phoneNumber || 'Authenticated User'}</p>
+                        <p className="text-slate-500">
+                          {user.email && !isPhonePasswordEmail(user.email)
+                            ? user.email
+                            : user.phoneNumber || (user.email ? formatBangladeshPhoneNumber(user.email.split('@')[0]) : 'Authenticated User')}
+                        </p>
                       </div>
                     </div>
 
@@ -1506,18 +2044,26 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                         <span className="font-mono font-bold text-[#003893] text-xs">@{formattedUsername}</span>
                       </div>
 
-                      {/* Phone Number */}
-                      {user.phoneNumber && (
+                      {/* Phone Number for phone accounts */}
+                      {(user.phoneNumber || (user.email && isPhonePasswordEmail(user.email))) && (
                         <div className="flex justify-between items-center">
-                          <span className="text-slate-500">Phone Number:</span>
-                          <span className="font-mono font-bold text-slate-800">{user.phoneNumber}</span>
+                          <span className="text-slate-500">Mobile Number:</span>
+                          <div className="flex items-center space-x-1.5">
+                            <span className="font-mono font-bold text-slate-800">
+                              {user.phoneNumber || (user.email ? formatBangladeshPhoneNumber(user.email.split('@')[0]) : '')}
+                            </span>
+                            <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full font-bold border border-emerald-200 flex items-center gap-1 text-[10px]">
+                              <ShieldCheck className="w-3 h-3 text-emerald-600" />
+                              Verified
+                            </span>
+                          </div>
                         </div>
                       )}
 
-                      {/* Email verification status */}
-                      {user.email && (
+                      {/* Email verification status for email accounts */}
+                      {user.email && !isPhonePasswordEmail(user.email) && (
                         <div className="flex justify-between items-center">
-                          <span className="text-slate-500">Email:</span>
+                          <span className="text-slate-500">Email Address:</span>
                           <div className="flex items-center space-x-1.5">
                             <span className="text-slate-800 font-mono text-[11px]">{user.email}</span>
                             <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full font-bold border border-emerald-200 flex items-center gap-1 text-[10px]">

@@ -64,7 +64,18 @@ export default function App() {
   const [selectedProductForDetail, setSelectedProductForDetail] = useState<Product | null>(null);
 
   // Firebase Auth integration
-  const { user: firebaseUser, isVerified } = useAuth();
+  const { user: firebaseUser, isVerified, checkIsSignInWithEmailLink } = useAuth();
+
+  // Auto-open AccountModal if user opens the page with an email sign-in link or auth action code
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const isEmailLink = checkIsSignInWithEmailLink();
+    const urlParams = new URLSearchParams(window.location.search);
+    const hasAuthCode = urlParams.has('oobCode') || urlParams.has('apiKey') || isEmailLink;
+    if (hasAuthCode) {
+      setIsAccountModalOpen(true);
+    }
+  }, [checkIsSignInWithEmailLink]);
 
   const currentUser = React.useMemo(() => {
     if (!firebaseUser) return null;

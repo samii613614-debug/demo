@@ -8,6 +8,9 @@ import {
   logoutUser as serviceLogout,
   sendPasswordReset as serviceResetPassword,
   sendUserEmailVerification as serviceSendVerification,
+  sendEmailSignInLink as serviceSendEmailSignInLink,
+  completeEmailLinkSignIn as serviceCompleteEmailLinkSignIn,
+  checkIsSignInWithEmailLink as serviceCheckIsSignInWithEmailLink,
   reloadUser as serviceReloadUser,
   isEmailPasswordUser,
   isUserVerified,
@@ -15,6 +18,9 @@ import {
   clearRecaptchaVerifier,
   sendPhoneOtp as serviceSendPhoneOtp,
   verifyPhoneOtp as serviceVerifyPhoneOtp,
+  loginWithPhonePassword as serviceLoginWithPhonePassword,
+  registerWithPhonePassword as serviceRegisterWithPhonePassword,
+  resetPhonePassword as serviceResetPhonePassword,
 } from '../services/authService';
 
 export interface AuthContextType {
@@ -25,8 +31,14 @@ export interface AuthContextType {
   isEmailPasswordUser: boolean;
   isVerified: boolean;
   registerWithEmail: (email: string, password: string, displayName?: string) => Promise<User>;
+  sendEmailSignInLink: (email: string, displayName?: string) => Promise<void>;
+  completeEmailLinkSignIn: (email: string, url?: string) => Promise<User>;
+  checkIsSignInWithEmailLink: (url?: string) => boolean;
   loginWithEmail: (email: string, password: string) => Promise<User>;
   loginWithGoogle: () => Promise<User>;
+  loginWithPhonePassword: (phoneNumber: string, password: string) => Promise<User>;
+  registerWithPhonePassword: (phoneNumber: string, password: string, displayName: string, confirmationResult: ConfirmationResult, otpCode: string) => Promise<User>;
+  resetPhonePassword: (phoneNumber: string, newPassword: string, confirmationResult: ConfirmationResult, otpCode: string) => Promise<void>;
   logout: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
   sendVerificationEmail: () => Promise<void>;
@@ -101,6 +113,41 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     },
     []
   );
+
+  const sendEmailSignInLink = useCallback(
+    async (email: string, displayName?: string): Promise<void> => {
+      setError(null);
+      try {
+        await serviceSendEmailSignInLink(email, displayName);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Failed to send sign-in link.';
+        setError(msg);
+        throw err;
+      }
+    },
+    []
+  );
+
+  const completeEmailLinkSignIn = useCallback(
+    async (email: string, url?: string): Promise<User> => {
+      setError(null);
+      try {
+        const loggedUser = await serviceCompleteEmailLinkSignIn(email, url);
+        setUser(loggedUser);
+        setAuthEpoch((prev) => prev + 1);
+        return loggedUser;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Sign in with email link failed.';
+        setError(msg);
+        throw err;
+      }
+    },
+    []
+  );
+
+  const checkIsSignInWithEmailLink = useCallback((url?: string): boolean => {
+    return serviceCheckIsSignInWithEmailLink(url);
+  }, []);
 
   const loginWithEmail = useCallback(async (email: string, password: string): Promise<User> => {
     setError(null);
@@ -204,6 +251,68 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     []
   );
 
+  const loginWithPhonePassword = useCallback(async (phoneNumber: string, password: string): Promise<User> => {
+    setError(null);
+    try {
+      const loggedUser = await serviceLoginWithPhonePassword(phoneNumber, password);
+      setUser(loggedUser);
+      setAuthEpoch((prev) => prev + 1);
+      return loggedUser;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Phone login failed.';
+      setError(msg);
+      throw err;
+    }
+  }, []);
+
+  const registerWithPhonePassword = useCallback(
+    async (
+      phoneNumber: string,
+      password: string,
+      displayName: string,
+      confirmationResult: ConfirmationResult,
+      otpCode: string
+    ): Promise<User> => {
+      setError(null);
+      try {
+        const newUser = await serviceRegisterWithPhonePassword(
+          phoneNumber,
+          password,
+          displayName,
+          confirmationResult,
+          otpCode
+        );
+        setUser(newUser);
+        setAuthEpoch((prev) => prev + 1);
+        return newUser;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Phone registration failed.';
+        setError(msg);
+        throw err;
+      }
+    },
+    []
+  );
+
+  const resetPhonePassword = useCallback(
+    async (
+      phoneNumber: string,
+      newPassword: string,
+      confirmationResult: ConfirmationResult,
+      otpCode: string
+    ): Promise<void> => {
+      setError(null);
+      try {
+        await serviceResetPhonePassword(phoneNumber, newPassword, confirmationResult, otpCode);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Password reset failed.';
+        setError(msg);
+        throw err;
+      }
+    },
+    []
+  );
+
   const reloadUser = useCallback(async (): Promise<User | null> => {
     setError(null);
     const targetUser = auth.currentUser || user;
@@ -241,8 +350,14 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       isEmailPasswordUser: isEmailPassword,
       isVerified,
       registerWithEmail,
+      sendEmailSignInLink,
+      completeEmailLinkSignIn,
+      checkIsSignInWithEmailLink,
       loginWithEmail,
       loginWithGoogle,
+      loginWithPhonePassword,
+      registerWithPhonePassword,
+      resetPhonePassword,
       logout,
       resetPassword,
       sendVerificationEmail,
@@ -259,8 +374,14 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       isEmailPassword,
       isVerified,
       registerWithEmail,
+      sendEmailSignInLink,
+      completeEmailLinkSignIn,
+      checkIsSignInWithEmailLink,
       loginWithEmail,
       loginWithGoogle,
+      loginWithPhonePassword,
+      registerWithPhonePassword,
+      resetPhonePassword,
       logout,
       resetPassword,
       sendVerificationEmail,
